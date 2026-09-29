@@ -55,7 +55,6 @@ const std::array<Xbyak::Reg64, ABI_PARAM_COUNT> BlockOfCode::ABI_PARAMS = {Block
 namespace {
 
 constexpr size_t CONSTANT_POOL_SIZE = 2 * 1024 * 1024;
-constexpr size_t PRELUDE_COMMIT_SIZE = 16 * 1024 * 1024;
 
 class CustomXbyakAllocator : public Xbyak::Allocator {
 public:
@@ -226,7 +225,16 @@ BlockOfCode::BlockOfCode(RunCodeCallbacks cb, JitStateInfo jsi, size_t total_cod
         , constant_pool(*this, CONSTANT_POOL_SIZE)
         , host_features(GetHostFeatures()) {
     EnableWriting();
-    EnsureMemoryCommitted(PRELUDE_COMMIT_SIZE);
+    // Windows: the code buffer is only MEM_RESERVE'd up front and committed
+    // lazily (see EnsureMemoryCommitted). Emission via Xbyak::CodeArray::db()
+    // performs no per-write commit check, so any block whose emitted size
+    // exceeds the committed headroom writes into reserved-but-uncommitted
+    // memory -> access violation in db() (xbyak.h). Some MCPE world-gen blocks
+    // do exactly that. Commit the entire reserved region up front so no
+    // emission can ever touch an uncommitted page. The buffer is a single
+    // per-Jit allocation (code_cache_size, default 128 MiB) and this only
+    // commits what was already reserved.
+    EnsureMemoryCommitted(maxSize_);
     GenRunCode(rcp);
 }
 
@@ -273,7 +281,11 @@ size_t BlockOfCode::SpaceRemaining() const {
 void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
 #ifdef _WIN32
     if (committed_size < size_ + codesize) {
-        committed_size = std::min<size_t>(maxSize_, committed_size + codesize);
+        // Commit up to the high-water mark we are about to write to, capped at
+        // the reserved size. (The previous "committed_size + codesize" grew the
+        // committed region by a fixed step regardless of how far size_ had
+        // advanced, which could leave writes ahead of the committed boundary.)
+        committed_size = std::min<size_t>(maxSize_, size_ + codesize);
 #    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
         VirtualAlloc(top_, committed_size, MEM_COMMIT, PAGE_READWRITE);
 #    else
