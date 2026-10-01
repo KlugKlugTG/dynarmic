@@ -4,6 +4,7 @@
  */
 
 #include <memory>
+#include <optional>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -225,4 +226,36 @@ TEST_CASE("arm: Test coprocessor (DMB)", "[arm][A32]") {
     jit.Run();
 
     REQUIRE(cp15_state.cp15_data_memory_barrier == 1);
+}
+
+class ThumbExceptionTestEnv final : public ThumbTestEnv {
+public:
+    std::optional<A32::Exception> exception;
+
+    void ExceptionRaised(std::uint32_t, A32::Exception value) override {
+        exception = value;
+    }
+};
+
+static A32::UserConfig GetUserConfig(ThumbExceptionTestEnv* testenv) {
+    A32::UserConfig user_config;
+    user_config.callbacks = testenv;
+    return user_config;
+}
+
+TEST_CASE("thumb: MRRC with invalid destination registers raises unpredictable instruction", "[thumb][A32]") {
+    const auto run_with_invalid_destinations = [](std::uint16_t second_halfword) {
+        ThumbExceptionTestEnv test_env;
+        A32::Jit jit{GetUserConfig(&test_env)};
+        test_env.code_mem = {0xEC5F, second_halfword, 0xE7FE, 0xE7FE};
+        jit.Regs()[15] = 0;
+        jit.SetCpsr(0x00000030);
+        test_env.ticks_left = 2;
+        jit.Run();
+        return test_env.exception == A32::Exception::UnpredictableInstruction;
+    };
+
+    REQUIRE(run_with_invalid_destinations(0x0F00));
+    REQUIRE(run_with_invalid_destinations(0xF000));
+    REQUIRE(run_with_invalid_destinations(0x0000));
 }

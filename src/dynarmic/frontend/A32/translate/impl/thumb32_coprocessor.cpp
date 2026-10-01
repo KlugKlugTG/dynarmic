@@ -13,6 +13,10 @@ bool TranslatorVisitor::thumb32_MCRR(bool two, Reg t2, Reg t, size_t coproc_no, 
 }
 
 bool TranslatorVisitor::thumb32_MRRC(bool two, Reg t2, Reg t, size_t coproc_no, size_t opc, CoprocReg CRm) {
+    if (t == Reg::PC || t2 == Reg::PC || t == t2) {
+        return UnpredictableInstruction();
+    }
+
     const auto two_words = ir.CoprocGetTwoWords(coproc_no, two, opc, CRm);
     ir.SetRegister(t, ir.LeastSignificantWord(two_words));
     ir.SetRegister(t2, ir.MostSignificantWord(two_words).result);
